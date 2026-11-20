@@ -5,7 +5,12 @@
 ## 业务场景与工作流
 模拟客户：临汀研究协作组，12位业务与分析人员。每月研究明细先从`service-calendar-202611.csv`录入底稿，经口径冻结、Python核算、负责人复核后向业务阅读者交付站内CSV。原有流程依靠人工表格抄算，痛点为口径版本难追溯、重复计算易错、复核与交付脱节。
 
-模块：业务总览、业务底稿、新建口径版本、异步核算与复核、定时交付、站内收件箱、审计。底稿可新增/修改/删除；口径仅新增版本；报告提交时冻结来源与版本并保存SHA256。定时交付引用已复核报告快照，worker到期写入数据库，业务阅读者下载。
+模块：业务总览、业务底稿、新建口径版本、异步核算与复核、配对比较、定时交付、站内收件箱、审计。底稿可新增/修改/删除；口径仅新增版本；报告提交时冻结来源与版本并保存SHA256。定时交付引用已复核报告快照，worker到期写入数据库，业务阅读者下载。
+
+## 配对比较口径
+两组接到的单结构不同，直接比整体超时率易误判。配对比较仅从**两份已复核报告的冻结底稿**取样本（报告不可改写，比较与正式报告链路隔离）：同优先级且开单时间相隔≤30分钟才可配对，每条样本在各自组内只用一次。优化目标依次为配对数最多、并列时开单时间差绝对值总和最小、再按两侧底稿行号定序，结果确定可复算。实现见`backend/src/services/pairing.py`，由`tests/test_pairing_bruteforce.py`穷举对照保证最优性。
+
+十万级样本分批（批大小2000）归并推进，候选对只在“本批+上批结转”局部窗口展开，不铺开全候选对；批界两侧经结转区照常配对，超过时间窗的失效样本及时剔除。检查点（批序号、结转、已配对行号）落库，中断后续跑沿用原底稿与已做选择。改选报告递增generation代次，worker每批核对代次，旧代次结果一律回滚，不覆盖新计算。仅当配对完成且两组在**配对样本**中的超时率齐备（配对数>0）才置`published`，业务阅读者仅可见已发布比较；零配对不发布并给warning。超时判定沿用各报告自身冻结口径。算法实现与验证在`backend/src/services/pairing.py`、`comparison.py`与`backend/tests/`。
 
 ## 算法口径
 工作日/假日/午休交集分钟与SLA超时分层透视。周五到周一含假日和午休手算；负时段拒绝；边界分钟。
@@ -44,11 +49,11 @@ Python3.11/FastAPI/SQLAlchemy/Redis，PostgreSQL16；前端原生HTML/CSS/JS ES 
 环境变量：COMPOSE_PROJECT_NAME、FRONTEND_PORT、BACKEND_PORT、DB_PORT、JWT_SECRET（部署替换）、DATABASE_URL、REDIS_URL、SEED_DEMO。`.env`不入Git。数据库/Redis/共享产物为命名卷。共享角色枚举admin/analyst/viewer与状态queued/running/completed/failed分别定义于backend/src/constants/enums.py和frontend/src/constants/enums.js。两个中间件：统一可恢复校验错误、每IP每分钟360请求限流。
 
 ## 已知边界
-定时分发为站内收件箱；一名worker轮询执行，无外部邮件。调度发送已复核固定报告快照，不自动重算新数据。时间显示Asia/Shanghai。报告导出适合小型数据；底稿全量加载240行演示数据。Google Fonts不可用时回退serif。后端API以专属字段对象收发，页面通过业务输入控件编辑，不要求用户写JSON。新增来源期间自动可选；专属字段和算法严格校验。JWT演示有效期2小时。
+定时分发为站内收件箱；一名worker轮询执行，无外部邮件。调度发送已复核固定报告快照，不自动重算新数据。时间显示Asia/Shanghai。报告导出适合小型数据；底稿全量加载240行演示数据。Google Fonts不可用时回退serif。后端API以专属字段对象收发，页面通过业务输入控件编辑，不要求用户写JSON。新增来源期间自动可选；专属字段和算法严格校验。JWT演示有效期2小时。配对比较的配对依据分页查看（每页默认100、上限500），全量依据可导出CSV；比较只读引用已复核报告快照，不回写底稿与正式报告。
 
 MIT License。
 
 ## 实际实体映射
 来源记录（Source，专属业务字段校验）、口径版本（Policy）、核算报告（Run）、交付计划（Schedule）、交付（Delivery）均经数据库→模型→请求schema→service→route/controller→frontend API→store→page。Period为已有来源期间字典，在任务期间选择器使用；不单独作为复杂度计数。底稿JSON为小型多字段单记录存储，不虚构未落库的子实体。
 
-实际表：期间字典 service_periods；专属来源 service_cases；冻结口径 business_calendars；异步报告 sla_runs。
+实际表：期间字典 service_periods；专属来源 service_cases；冻结口径 business_calendars；异步报告 sla_runs；配对比较 comparisons。
